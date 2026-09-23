@@ -16,6 +16,8 @@ from PIL import Image
 SOURCE = Path(__file__).with_name("source.mp4")
 OUTPUT = Path(__file__).resolve().parents[2] / "configs/airootfs/usr/share/omarchy-iso/install-snake.frames"
 SIZE = 56
+LARGE_OUTPUT = OUTPUT.with_name("install-snake-large.frames")
+LARGE_SIZE = 80
 
 
 def frames(directory: Path, crop: str) -> list[Path]:
@@ -46,13 +48,30 @@ def color(rgb: tuple[int, int, int]) -> int:
     return 16
 
 
-def ansi_frame(path: Path) -> bytes:
-    image = Image.open(path).convert("RGB").resize((SIZE, SIZE), Image.Resampling.BOX)
+def ansi_frame(path: Path, size: int) -> bytes:
+    image = Image.open(path).convert("RGB").resize((size, size), Image.Resampling.BOX)
+    # Video compression produces isolated pixels; remove only those without
+    # rounding the long, straight logo edges.
+    mask = Image.new("L", (size, size))
+    mask.putdata([0 if (shade := color(image.getpixel((x, y)))) == 16 else 128 if shade == 233 else 255
+                  for y in range(size) for x in range(size)])
+    original = mask.load()
+    cleaned = mask.copy()
+    pixels = cleaned.load()
+    for y in range(1, size - 1):
+        for x in range(1, size - 1):
+            neighbors = [original[x + dx, y + dy]
+                         for dy in (-1, 0, 1) for dx in (-1, 0, 1) if dx or dy]
+            if original[x, y] != 0 and neighbors.count(original[x, y]) <= 1:
+                pixels[x, y] = max(set(neighbors), key=neighbors.count)
+            elif original[x, y] == 0 and neighbors.count(255) >= 7:
+                pixels[x, y] = 255
     out = io.StringIO()
-    for y in range(0, SIZE, 2):
+    for y in range(0, size, 2):
         last = None
-        for x in range(SIZE):
-            pair = (color(image.getpixel((x, y))), color(image.getpixel((x, y + 1))))
+        for x in range(size):
+            pair = (113 if pixels[x, y] == 255 else 233 if pixels[x, y] == 128 else 16,
+                    113 if pixels[x, y + 1] == 255 else 233 if pixels[x, y + 1] == 128 else 16)
             if pair != last:
                 out.write(f"\x1b[38;5;{pair[0]};48;5;{pair[1]}m")
                 last = pair
@@ -76,9 +95,10 @@ def main() -> None:
         indices = [0] + [min(samples, key=lambda item: (abs(item[0] - p), item[1]))[1]
                          for p in range(1, 101)] + [len(art) - 8]
         OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-        OUTPUT.write_bytes(b"".join(base64.b64encode(gzip.compress(ansi_frame(art[i]), mtime=0)) + b"\n"
-                                    for i in indices))
-        print(f"Wrote {len(indices)} frames to {OUTPUT} ({OUTPUT.stat().st_size} bytes)")
+        for size, output in ((SIZE, OUTPUT), (LARGE_SIZE, LARGE_OUTPUT)):
+            output.write_bytes(b"".join(base64.b64encode(gzip.compress(ansi_frame(art[i], size), mtime=0)) + b"\n"
+                                        for i in indices))
+            print(f"Wrote {len(indices)} frames to {output} ({output.stat().st_size} bytes)")
 
 
 if __name__ == "__main__":
