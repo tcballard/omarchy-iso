@@ -492,7 +492,12 @@ render_dynamic() {
   center "${DIM}${PHASE_NAME:-Starting installation}${RESET}" "$CONTENT_WIDTH"
   blank_line
   line_at "$CONTENT_WIDTH" $(( (CONTENT_WIDTH - 34) / 2 )) ""
-  progress_bar "$pm" 34
+  if (( DYNAMIC_ROW == TOP_ROW )); then
+    printf '%s%s%s%s%s' "${CSI}96m" "$(repeat ━ "$((pm * 34 / 1000))")" \
+      "$DARK" "$(repeat ━ "$((34 - pm * 34 / 1000))")" "$RESET"
+  else
+    progress_bar "$pm" 34
+  fi
   printf '\n'
   blank_line
   center "${DIM}Tip:${RESET} ${GREEN}$(current_tip)${RESET}" "$CONTENT_WIDTH"
