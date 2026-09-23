@@ -493,7 +493,7 @@ render_dynamic() {
   blank_line
   line_at "$CONTENT_WIDTH" $(( (CONTENT_WIDTH - 34) / 2 )) ""
   if (( DYNAMIC_ROW == TOP_ROW )); then
-    printf '%s%s%s%s%s' "${CSI}96m" "$(repeat ━ "$((pm * 34 / 1000))")" \
+    printf '%s%s%s%s%s' "${CSI}38;5;113m" "$(repeat ━ "$((pm * 34 / 1000))")" \
       "$DARK" "$(repeat ━ "$((34 - pm * 34 / 1000))")" "$RESET"
   else
     progress_bar "$pm" 34
