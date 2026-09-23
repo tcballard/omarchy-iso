@@ -30,7 +30,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/bin/omarchy-pkg-add"
           echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
       - name: Build real ISO
-        run: ./bin/omarchy-iso-make --keep-pkg-cache --no-boot-offer
+        run: ./bin/omarchy-iso-make --edge --keep-pkg-cache --no-boot-offer
       - name: Install from ISO in VM and capture QMP screens
         run: |
           iso=$(ls -t release/*.iso | head -n1)
