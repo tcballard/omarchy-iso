@@ -21,7 +21,7 @@ SIZE = 56
 def frames(directory: Path, crop: str) -> list[Path]:
     subprocess.run(
         ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(SOURCE),
-         "-vf", f"fps=8,crop={crop}", "-frames:v", "152", str(directory / "%03d.png")],
+         "-vf", f"fps=30,crop={crop}", "-frames:v", "570", str(directory / "%03d.png")],
         check=True,
     )
     return sorted(directory.glob("*.png"))
@@ -73,7 +73,7 @@ def main() -> None:
         # The initial dark frame is 0%. The last source frame is the completed
         # Omarchy mark, shown after the dashboard reaches 100%.
         indices = [0] + [min(samples, key=lambda item: (abs(item[0] - p), item[1]))[1]
-                         for p in range(1, 101)] + [144]
+                         for p in range(1, 101)] + [len(art) - 8]
         OUTPUT.parent.mkdir(parents=True, exist_ok=True)
         OUTPUT.write_bytes(b"".join(base64.b64encode(gzip.compress(ansi_frame(art[i]), mtime=0)) + b"\n"
                                     for i in indices))
