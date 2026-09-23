@@ -24,6 +24,8 @@ INSTALL_CMD=("$@")
 TTY_PATH="${OMARCHY_DASHBOARD_TTY:-/dev/tty}"
 LOGO_PATH="${OMARCHY_PATH:-/usr/share/omarchy}/logo.txt"
 SNAKE_FRAMES="${OMARCHY_SNAKE_FRAMES:-/usr/share/omarchy-iso/install-snake.frames}"
+SNAKE_LARGE_FRAMES="${OMARCHY_SNAKE_LARGE_FRAMES:-/usr/share/omarchy-iso/install-snake-large.frames}"
+SNAKE_ACTIVE_FRAMES="$SNAKE_FRAMES"
 
 # Autoinstall has no one at the keyboard, and every prompt this dashboard owns
 # reads from the TTY, so each would hang forever. Suppress them here rather than
@@ -276,7 +278,7 @@ render_snake() {
   line=$(( percent + 1 ))
   (( line < 1 )) && line=1
   (( line > 102 )) && line=102
-  frame=$(sed -n "${line}p" "$SNAKE_FRAMES")
+  frame=$(sed -n "${line}p" "$SNAKE_ACTIVE_FRAMES")
   [[ -n $frame ]] || return 1
   # Decoded frames contain cursor-free text only. Put every row at the same
   # horizontal offset so console resizing cannot leave the art off-center.
@@ -447,7 +449,17 @@ centered_top_row() {
 
 measure_progress_layout() {
   LAST_SIZE="$(term_size)"
-  if [[ -r $SNAKE_FRAMES ]] && (( $(term_cols) >= CONTENT_WIDTH && ${LAST_SIZE%% *} >= SNAKE_PROGRESS_HEIGHT )); then
+  if [[ -r $SNAKE_LARGE_FRAMES ]] && (( $(term_cols) >= CONTENT_WIDTH && ${LAST_SIZE%% *} >= 47 )); then
+    SNAKE_ACTIVE_FRAMES="$SNAKE_LARGE_FRAMES"
+    SNAKE_WIDTH=80
+    SNAKE_HEIGHT=40
+  else
+    SNAKE_ACTIVE_FRAMES="$SNAKE_FRAMES"
+    SNAKE_WIDTH=56
+    SNAKE_HEIGHT=28
+  fi
+  SNAKE_PROGRESS_HEIGHT=$((SNAKE_HEIGHT + 7))
+  if [[ -r $SNAKE_ACTIVE_FRAMES ]] && (( $(term_cols) >= CONTENT_WIDTH && ${LAST_SIZE%% *} >= SNAKE_PROGRESS_HEIGHT )); then
     TOP_ROW="$(centered_top_row "$SNAKE_PROGRESS_HEIGHT")"
     DYNAMIC_ROW=$TOP_ROW
   else
@@ -545,7 +557,7 @@ render_finish() {
   effect_canvas_width="$(term_cols)"
   (( effect_canvas_width > 2 )) && effect_canvas_width=$((effect_canvas_width - 2))
 
-  if [[ -r $SNAKE_FRAMES ]] && (( $(term_cols) >= CONTENT_WIDTH && ${LAST_SIZE%% *} >= SNAKE_HEIGHT + 5 )); then
+  if [[ -r $SNAKE_ACTIVE_FRAMES ]] && (( $(term_cols) >= CONTENT_WIDTH && ${LAST_SIZE%% *} >= SNAKE_HEIGHT + 7 )); then
     FINISH_ART_HEIGHT=$SNAKE_HEIGHT
     FINISH_HEIGHT=$((SNAKE_HEIGHT + 7))
   else
