@@ -1,0 +1,135 @@
+name: Record full Omarchy snake ISO install
+
+on:
+  push:
+    branches: [feat/install-snake-recording]
+  workflow_dispatch:
+
+jobs:
+  install:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/checkout@v4
+        with:
+          repository: omacom/omarchy
+          ref: quattro
+          path: deps/omarchy
+      - uses: actions/checkout@v4
+        with:
+          repository: omacom/omarchy-pkgs
+          ref: master
+          path: deps/omarchy-pkgs
+      - name: Free room for the ISO and VM disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android/sdk /opt/hostedtoolcache/CodeQL
+          df -h .
+      - name: Install host VM and OCR tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 qemu-utils ovmf socat ffmpeg imagemagick tesseract-ocr tesseract-ocr-eng openssh-client
+          sudo ln -s /usr/bin/convert /usr/local/bin/magick
+          sudo mkdir -p /usr/share/edk2/x64
+          code=/usr/share/OVMF/OVMF_CODE_4M.fd
+          vars=/usr/share/OVMF/OVMF_VARS_4M.fd
+          test -f "$code" && test -f "$vars" && test -c /dev/kvm
+          sudo ln -s "$code" /usr/share/edk2/x64/OVMF_CODE.4m.fd
+          sudo ln -s "$vars" /usr/share/edk2/x64/OVMF_VARS.4m.fd
+          mkdir -p "$RUNNER_TEMP/bin"
+          printf '#!/bin/sh\nexit 0\n' >"$RUNNER_TEMP/bin/omarchy-pkg-add"
+          chmod +x "$RUNNER_TEMP/bin/omarchy-pkg-add"
+          echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
+      - name: Build real ISO
+        run: |
+          # The T2 mirror currently lacks this optional Mac-only firmware.
+          # A PC VM cannot use it; keep the branch's ISO/installer files intact.
+          sed -i '/^apple-bcm-firmware$/d' deps/omarchy/install/omarchy-other.packages
+          ./bin/omarchy-iso-make --local-source deps/omarchy deps/omarchy-pkgs --keep-pkg-cache --no-boot-offer
+      - name: Install from ISO and record complete console session
+        run: |
+          mkdir -p recording
+          cat >"$RUNNER_TEMP/record_qmp.py" <<'PY'
+          import json
+          import signal
+          import socket
+          import subprocess
+          import sys
+          import tempfile
+          import time
+          from pathlib import Path
+          
+          sock, output = sys.argv[1:]
+          running = True
+          signal.signal(signal.SIGTERM, lambda *_: globals().__setitem__("running", False))
+          frame_file = Path(tempfile.gettempdir()) / "omarchy-record-frame.ppm"
+          encoder = subprocess.Popen([
+              "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
+              "-f", "image2pipe", "-framerate", "4", "-c:v", "ppm", "-i", "pipe:0",
+              "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+              "-pix_fmt", "yuv420p", "-movflags", "+faststart", output,
+          ], stdin=subprocess.PIPE)
+          
+          def qmp_frame():
+              with socket.socket(socket.AF_UNIX) as connection:
+                  connection.settimeout(5)
+                  connection.connect(sock)
+                  with connection.makefile("rb") as stream:
+                      stream.readline()  # QMP greeting.
+                      connection.sendall(b'{"execute":"qmp_capabilities"}\n')
+                      stream.readline()
+                      connection.sendall((json.dumps({
+                          "execute": "screendump",
+                          "arguments": {"filename": str(frame_file)}
+                      }) + "\n").encode())
+                      response = json.loads(stream.readline())
+                      if "error" in response:
+                          raise RuntimeError(response["error"])
+              return frame_file.read_bytes()
+          
+          count = 0
+          try:
+              while running and encoder.poll() is None:
+                  start = time.monotonic()
+                  try:
+                      frame = qmp_frame()
+                      encoder.stdin.write(frame)
+                      count += 1
+                  except (OSError, ValueError, RuntimeError, BrokenPipeError) as error:
+                      print(f"frame {count}: {error}", file=sys.stderr, flush=True)
+                  time.sleep(max(0, 0.25 - (time.monotonic() - start)))
+          finally:
+              encoder.stdin.close()
+              status = encoder.wait(timeout=60)
+              frame_file.unlink(missing_ok=True)
+              print(f"recorded {count} frames to {output}; ffmpeg exit {status}", flush=True)
+              if status or count < 20:
+                  sys.exit(1)
+          PY
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("bin/omarchy-iso-test")
+          original = p.read_text()
+          needle = "  drive_configurator\n  wait_for_install\n"
+          assert original.count(needle) == 1
+          replacement = "  python3 \"$RUNNER_TEMP/record_qmp.py\" \"$QMP_SOCK\" \"$OMARCHY_RECORD_QMP\" >\"$RUN_DIR/recording.log\" 2>&1 &\n  record_pid=$!\n  drive_configurator\n  wait_for_install\n  kill -TERM \"$record_pid\"\n  wait \"$record_pid\"\n"
+          p.write_text(original.replace(needle, replacement))
+          PY
+          iso=$(ls -t release/*.iso | head -n1)
+          OMARCHY_RECORD_QMP="$GITHUB_WORKSPACE/recording/omarchy-install.mp4" ./bin/omarchy-iso-test "$iso" --install-only --no-preview --memory 4096 --timeout 3600
+          test -s recording/omarchy-install.mp4
+          ffprobe -v error -show_entries format=duration,size -of default=noprint_wrappers=1 recording/omarchy-install.mp4
+      - name: Upload real installer screens and run logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: omarchy-install-full-recording
+          path: |
+            recording/*.mp4
+            test-runs/**/*.png
+            test-runs/**/install-serial.log
+            test-runs/**/omarchy-install.log
+          if-no-files-found: warn
+          retention-days: 30
