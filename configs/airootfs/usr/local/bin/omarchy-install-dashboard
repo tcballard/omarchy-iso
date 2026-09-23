@@ -207,6 +207,7 @@ PKG_BASE=-1            # package count when the phase started
 PKG_SEEN=0             # running max of packages since PKG_BASE
 PKG_LAST_CHANGE=0
 PKG_BONUS=0
+WORK_PM=0              # work-only position for the snake, per-mille, monotonic
 
 # Monotonic clock: tzupdate and systemd-timesyncd can step the wall clock
 # mid-install, which would jump every time-driven band to its ceiling.
@@ -293,7 +294,7 @@ count_packages() {
 # here would land on the TTY between the cursor escape and the bar.
 install_progress() {
   local phase finished index total target
-  local lo hi tau span t pos work gap n pkg_signal=0
+  local lo hi tau span t pos work gap n pkg_signal=0 wlo=-1
   local -a state
 
   PROGRESS_PM=$POS
@@ -314,6 +315,7 @@ install_progress() {
   if (( finished > 0 )) || [[ $phase == "Installation complete" ]]; then
     POS=1000
     PROGRESS_PM=1000
+    WORK_PM=1000
     return 0
   fi
 
@@ -357,11 +359,14 @@ install_progress() {
       else
         lo=$PHASE_LO
         hi=$(( PHASE_LO + 30 ))
+        # PHASE_LO is time-driven; the snake holds instead.
+        wlo=$WORK_PM
       fi
       tau=60
       ;;
   esac
 
+  (( wlo < 0 )) && wlo=$lo
   (( pkg_signal && PKG_TOTAL > 0 )) || pkg_signal=0
   (( pkg_signal )) && tau=$PKG_FLOOR_TAU
 
@@ -392,13 +397,285 @@ install_progress() {
     (( gap > PKG_BONUS )) && PKG_BONUS=$gap
     work=$(( lo + (span - 1 - PKG_TAIL_PM) * PKG_SEEN / PKG_TOTAL + PKG_BONUS ))
     (( work > pos )) && pos=$work
+    # Count only: no bonus, no tail, so the snake stops when pacman does.
+    n=$PKG_SEEN
+    (( n > PKG_TOTAL )) && n=$PKG_TOTAL
+    work=$(( lo + (span - 1) * n / PKG_TOTAL ))
+    (( work > wlo )) && wlo=$work
   fi
+
+  (( wlo > hi - 1 )) && wlo=$(( hi - 1 ))
+  (( wlo > 999 )) && wlo=999
+  (( wlo > WORK_PM )) && WORK_PM=$wlo
 
   (( pos > hi - 1 )) && pos=$(( hi - 1 ))
   (( pos > POS )) && POS=$pos
   (( POS > 1000 )) && POS=1000
   PROGRESS_PM=$POS
   return 0
+}
+
+# ── Snake ────────────────────────────────────────────────────────────────────
+#
+# While the installer runs, a snake draws the Omarchy mark: one cell at 0%, and
+# at 100% a body covering every cell of the mark exactly once. The path comes
+# from builder/generate-snake-path.py. A path cell is half a character cell,
+# drawn with ▀ ▄ █, which the kernel's built-in CP437 console font carries.
+#
+# Length follows WORK_PM, never POS. POS has a time floor and a package bonus
+# so the bar keeps moving through stalls; a snake that crawls while the install
+# hangs is lying. WORK_PM is the band floor of the phase the installer reached
+# (the bands weight each phase by its typical duration, so a floor is the share
+# the finished phases account for) plus, in the package phase, packages
+# installed / PKG_TOTAL of its band. It moves only on a phase boundary or a
+# package landing, and stays below 1000 until finished_at. The last cell waits
+# for the installer to exit 0.
+#
+# The drawn length trails WORK_PM by at most SNAKE_STEP cells a frame and never
+# passes it. Caught up, the head blinks: alive, without drawing progress.
+SNAKE_PATH_FILE="${OMARCHY_SNAKE_PATH_FILE:-/usr/share/omarchy-iso/snake-path}"
+SNAKE_STEP=3           # cells per frame: 60 cells/s at 20 fps
+SNAKE_FRAME=0.05       # seconds per frame
+SNAKE_FRAMES_PER_POLL=10
+SNAKE_BLINK_FRAMES=10  # head blink half-period once caught up
+SNAKE_PATH=()          # path cells as row * SNAKE_COLS + col, in draw order
+SNAKE_LEN=0
+SNAKE_COLS=0           # path cells across = character columns
+SNAKE_ROWS=0           # character rows (two path cells each)
+SNAKE_FINE=()          # per path cell: 0 empty, 1 body, 2 head, 3 flash
+SNAKE_ON=0
+SNAKE_TOP=1
+SNAKE_LEFT=1
+SNAKE_SHOWN=0
+SNAKE_TARGET=1
+SNAKE_DONE=0
+SNAKE_IDLE=0
+SNAKE_BLINK=0
+SNAKE_TIP=-1
+SNAKE_DIRTY=()
+SNAKE_OUT=""
+SNAKE_G=""
+SNAKE_SLEEP_FD=""
+# Tokyo Night sets bright green equal to green, so the head is the greeter's
+# cyan accent. The 16-colour console has only eight backgrounds, which is all a
+# head/body split cell needs; the flash is uniform, so it never needs one.
+SNAKE_FG=("" 32 36 97)
+SNAKE_BG=("" 42 46 47)
+[[ -z ${NO_COLOR:-} ]] || { SNAKE_FG=("" "" "" ""); SNAKE_BG=("" "" "" ""); }
+
+snake_load() {
+  local r c max_r=-1 max_c=-1 i
+  local -a rows=() cols=()
+  local -A seen=()
+
+  [[ -r $SNAKE_PATH_FILE ]] || return 1
+  while read -r r c _; do
+    [[ -z $r || $r == \#* ]] && continue
+    [[ $r =~ ^[0-9]+$ && $c =~ ^[0-9]+$ ]] || return 1
+    [[ -z ${seen[$r,$c]:-} ]] || return 1
+    seen[$r,$c]=1
+    rows+=("$r")
+    cols+=("$c")
+    (( r > max_r )) && max_r=$r
+    (( c > max_c )) && max_c=$c
+  done <"$SNAKE_PATH_FILE"
+  (( ${#rows[@]} >= 2 && max_r < 100 && max_c < 200 )) || return 1
+
+  SNAKE_COLS=$(( max_c + 1 ))
+  SNAKE_ROWS=$(( (max_r + 2) / 2 ))
+  SNAKE_PATH=()
+  for i in "${!rows[@]}"; do
+    SNAKE_PATH+=("$(( rows[i] * SNAKE_COLS + cols[i] ))")
+  done
+  SNAKE_LEN=${#SNAKE_PATH[@]}
+  SNAKE_FINE=()
+  for (( i = 0; i < 2 * SNAKE_ROWS * SNAKE_COLS; i++ )); do SNAKE_FINE[i]=0; done
+  return 0
+}
+
+# Logo, blank, title, blank, tip.
+snake_fits() {
+  local h="${1%% *}" w="${1#* }"
+  [[ $h =~ ^[0-9]+$ && $w =~ ^[0-9]+$ ]] || return 1
+  (( SNAKE_LEN > 0 && h >= SNAKE_ROWS + 4 && w >= SNAKE_COLS ))
+}
+
+# Sets SNAKE_G to the character for a top and bottom path cell.
+snake_glyph() {
+  local t="$1" b="$2"
+  if [[ -n ${NO_COLOR:-} ]]; then
+    t=$(( t > 0 ))
+    b=$(( b > 0 ))
+  fi
+  if (( t == 0 && b == 0 )); then
+    SNAKE_G="${RESET} "
+  elif (( b == 0 )); then
+    SNAKE_G="${CSI}0;${SNAKE_FG[t]}m▀"
+  elif (( t == 0 )); then
+    SNAKE_G="${CSI}0;${SNAKE_FG[b]}m▄"
+  elif (( t == b )); then
+    SNAKE_G="${CSI}0;${SNAKE_FG[t]}m█"
+  else
+    SNAKE_G="${CSI}0;${SNAKE_FG[t]};${SNAKE_BG[b]}m▀"
+  fi
+}
+
+snake_set() {
+  SNAKE_FINE[$1]=$2
+  SNAKE_DIRTY+=("$(( $1 / SNAKE_COLS / 2 * SNAKE_COLS + $1 % SNAKE_COLS ))")
+}
+
+# Redraw only the character cells touched since the last flush, in one write.
+snake_flush() {
+  local i R c
+  for i in "${SNAKE_DIRTY[@]}"; do
+    R=$(( i / SNAKE_COLS ))
+    c=$(( i % SNAKE_COLS ))
+    snake_glyph "${SNAKE_FINE[2 * R * SNAKE_COLS + c]}" "${SNAKE_FINE[(2 * R + 1) * SNAKE_COLS + c]}"
+    SNAKE_OUT+="${CSI}$(( SNAKE_TOP + R ));$(( SNAKE_LEFT + c ))H${SNAKE_G}"
+  done
+  SNAKE_DIRTY=()
+  [[ -n $SNAKE_OUT ]] && printf '%s%s' "$SNAKE_OUT" "$RESET"
+  SNAKE_OUT=""
+  return 0
+}
+
+snake_draw_all() {
+  local R c
+  for (( R = 0; R < SNAKE_ROWS; R++ )); do
+    SNAKE_OUT+="${CSI}$(( SNAKE_TOP + R ));${SNAKE_LEFT}H"
+    for (( c = 0; c < SNAKE_COLS; c++ )); do
+      snake_glyph "${SNAKE_FINE[2 * R * SNAKE_COLS + c]}" "${SNAKE_FINE[(2 * R + 1) * SNAKE_COLS + c]}"
+      SNAKE_OUT+="$SNAKE_G"
+    done
+  done
+  printf '%s%s' "$SNAKE_OUT" "$RESET"
+  SNAKE_OUT=""
+}
+
+snake_update_target() {
+  local n=$(( 1 + WORK_PM * (SNAKE_LEN - 1) / 1000 ))
+  if (( ! SNAKE_DONE && n > SNAKE_LEN - 1 )); then
+    n=$(( SNAKE_LEN - 1 ))
+  fi
+  (( n > SNAKE_TARGET )) && SNAKE_TARGET=$n
+  return 0
+}
+
+snake_frame() {
+  local n=$SNAKE_SHOWN new i v
+  if (( n < SNAKE_TARGET )); then
+    new=$(( n + SNAKE_STEP ))
+    (( new > SNAKE_TARGET )) && new=$SNAKE_TARGET
+    for (( i = (n > 0 ? n - 1 : 0); i < new - 1; i++ )); do
+      snake_set "${SNAKE_PATH[i]}" 1
+    done
+    snake_set "${SNAKE_PATH[new - 1]}" 2
+    SNAKE_SHOWN=$new
+    SNAKE_IDLE=0
+    SNAKE_BLINK=0
+  else
+    SNAKE_IDLE=$(( SNAKE_IDLE + 1 ))
+    if (( SNAKE_IDLE % SNAKE_BLINK_FRAMES == 0 )); then
+      SNAKE_BLINK=$(( 1 - SNAKE_BLINK ))
+      v=2
+      if (( SNAKE_BLINK )); then
+        # A lone cell blinks like a cursor; a body keeps its length and only
+        # the head's colour pulses. Without colour, the head blinks out.
+        v=1
+        (( SNAKE_SHOWN == 1 )) && v=0
+        [[ -z ${NO_COLOR:-} ]] || v=0
+      fi
+      snake_set "${SNAKE_PATH[n - 1]}" "$v"
+    fi
+  fi
+  snake_flush
+}
+
+snake_fill() {
+  local i
+  for i in "${SNAKE_PATH[@]}"; do snake_set "$i" "$1"; done
+  snake_flush
+}
+
+# Frame delay without forking sleep 20 times a second under pacstrap: read on a
+# pipe this process holds both ends of times out and never sees data or EOF.
+snake_sleep() {
+  local secs="${1:-$SNAKE_FRAME}" rc=0
+  if [[ -n $SNAKE_SLEEP_FD ]]; then
+    read -rt "$secs" -u "$SNAKE_SLEEP_FD" _ || rc=$?
+    (( rc > 128 )) && return 0
+    SNAKE_SLEEP_FD=""
+  fi
+  sleep "$secs"
+}
+
+snake_layout() {
+  local size="$1"
+  LAST_SIZE="$size"
+  TOP_ROW="$(centered_top_row "$(( SNAKE_ROWS + 4 ))")"
+  SNAKE_TOP=$TOP_ROW
+  SNAKE_LEFT=$(( (${size#* } - SNAKE_COLS) / 2 + 1 ))
+  printf '%s' "$CLEAR"
+  snake_draw_all
+  printf '%s%d;1H' "$CSI" "$(( SNAKE_TOP + SNAKE_ROWS + 1 ))"
+  center "Installing Omarchy" "$SNAKE_COLS"
+  SNAKE_TIP=-1
+}
+
+# Acts only on a size change: the console widens late at boot and can resize
+# under us. Too small for the snake means the wordmark and bar, as before.
+choose_layout() {
+  local size
+  size="$(term_size)"
+  [[ $size != "$LAST_SIZE" ]] || return 0
+  if snake_fits "$size"; then
+    SNAKE_ON=1
+    snake_layout "$size"
+  else
+    SNAKE_ON=0
+    render_static
+  fi
+}
+
+# Twice a second: progress and the tip. Frames between polls only animate.
+snake_poll() {
+  local idx cols tip
+  set_now
+  install_progress
+  snake_update_target
+  idx=$(( (NOW - DASH_T0) / 8 % ${#tips[@]} ))
+  (( idx == SNAKE_TIP )) && return 0
+  SNAKE_TIP=$idx
+  cols="${LAST_SIZE#* }"
+  tip="$(truncate_for_width "${tips[idx]}" "$(( cols - 6 ))")"
+  printf '%s%d;1H' "$CSI" "$(( SNAKE_TOP + SNAKE_ROWS + 3 ))"
+  center "${DIM}Tip:${RESET} ${GREEN}${tip}${RESET}" "$cols"
+}
+
+# Hold the finished mark, flash it, settle back to the logo colour.
+snake_finish() {
+  local f
+  SNAKE_DONE=1
+  WORK_PM=1000
+  snake_update_target
+  for (( f = 0; SNAKE_SHOWN < SNAKE_TARGET && f < SNAKE_LEN; f++ )); do
+    snake_frame
+    snake_sleep
+  done
+  snake_fill 1
+  snake_sleep 0.4
+  snake_fill 3
+  snake_sleep 0.3
+  snake_fill 1
+  snake_sleep 0.6
+}
+
+# A blinked-out head would leave a failed install looking one cell short.
+snake_freeze() {
+  (( SNAKE_SHOWN > 0 )) || return 0
+  snake_set "${SNAKE_PATH[SNAKE_SHOWN - 1]}" 2
+  snake_flush
 }
 
 # One tip per 8 seconds, in order. On elapsed time, not a frame counter: a frame
@@ -796,9 +1073,14 @@ launch_child() {
   child_pgid=$child_pid
 }
 
+# Tests source this file for its functions.
+[[ ${BASH_SOURCE[0]} == "$0" ]] || return 0
+
 [[ -e $TTY_PATH ]] || exit 2
+snake_load || SNAKE_LEN=0
+exec {SNAKE_SLEEP_FD}<> <(:) 2>/dev/null || SNAKE_SLEEP_FD=""
 printf '%s' "$HIDE_CURSOR" >"$TTY_PATH"
-render_static >"$TTY_PATH"
+choose_layout >"$TTY_PATH"
 set_now
 DASH_T0=$NOW
 PHASE_T0=$NOW
@@ -806,8 +1088,17 @@ PKG_LAST_CHANGE=$NOW
 launch_child
 
 while jobs -pr | grep -qx "$child_pid"; do
-  render_dynamic >"$TTY_PATH" 2>/dev/null || true
-  sleep 0.5
+  choose_layout >"$TTY_PATH" 2>/dev/null || true
+  if (( SNAKE_ON )); then
+    snake_poll >"$TTY_PATH" 2>/dev/null || true
+    for (( frame = 0; frame < SNAKE_FRAMES_PER_POLL; frame++ )); do
+      snake_frame >"$TTY_PATH" 2>/dev/null || true
+      snake_sleep
+    done
+  else
+    render_dynamic >"$TTY_PATH" 2>/dev/null || true
+    sleep 0.5
+  fi
 done
 
 set +e
@@ -819,7 +1110,9 @@ child_pgid=""
 
 dashboard_log "installer child exited with status $status"
 
-if (( status == 0 )); then
+if (( status == 0 )) && (( SNAKE_ON )); then
+  snake_finish >"$TTY_PATH" 2>/dev/null || true
+elif (( status == 0 )); then
   # finished_at lands microseconds before the child exits, so the 0.5s poll
   # rarely renders a full bar before the finish screen replaces it.
   render_dynamic >"$TTY_PATH" 2>/dev/null || true
@@ -827,6 +1120,7 @@ if (( status == 0 )); then
 fi
 
 if (( status != 0 )); then
+  (( SNAKE_ON )) && { snake_freeze >"$TTY_PATH" 2>/dev/null || true; }
   failure_status="$status"
   failure_summary=""
   if [[ -f $STATE_FILE ]]; then
