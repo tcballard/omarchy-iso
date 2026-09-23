@@ -23,6 +23,7 @@ INSTALL_CMD=("$@")
 
 TTY_PATH="${OMARCHY_DASHBOARD_TTY:-/dev/tty}"
 LOGO_PATH="${OMARCHY_PATH:-/usr/share/omarchy}/logo.txt"
+SNAKE_FRAMES="${OMARCHY_SNAKE_FRAMES:-/usr/share/omarchy-iso/install-snake.frames}"
 
 # Autoinstall has no one at the keyboard, and every prompt this dashboard owns
 # reads from the TTY, so each would hang forever. Suppress them here rather than
@@ -153,8 +154,8 @@ LOGO_HEIGHT="$(logo_height)"
 CONTENT_WIDTH="$LOGO_WIDTH"
 # Rows the progress screen occupies: logo, blank, title, blank, bar, blank, tip.
 PROGRESS_HEIGHT=$((LOGO_HEIGHT + 7))
-SNAKE_WIDTH=42
-SNAKE_HEIGHT=11
+SNAKE_WIDTH=56
+SNAKE_HEIGHT=28
 SNAKE_PROGRESS_HEIGHT=$((SNAKE_HEIGHT + 7))
 TOP_ROW=1
 DYNAMIC_ROW=$((LOGO_HEIGHT + 3))
@@ -165,6 +166,7 @@ LAST_PM=10
 # one row taller: `gum confirm` always paints prompt/blank/button and clears all
 # three, so the button cannot sit closer than two rows under a title we drew.
 FINISH_HEIGHT=$((LOGO_HEIGHT + 5))
+FINISH_ART_HEIGHT=$LOGO_HEIGHT
 FINISH_TOP_ROW=2
 
 # ── Install progress ─────────────────────────────────────────────────────────
@@ -266,57 +268,22 @@ render_logo() {
   fi
 }
 
-# A console rendering of the snake mockup. Each cell uses two columns so the
-# path retains its shape on the Linux VT. Progress comes from install_progress,
-# never from the animation clock; a stalled phase cannot imply completed work.
-snake_path() {
-  local x y from_x from_y to_x to_y step_x step_y
-  local -a corners=(
-    '20 10' '0 10' '0 0' '20 0' '20 9' '2 9'
-    '2 2' '18 2' '18 7' '4 7' '4 4' '16 4'
-  )
-  SNAKE_X=() SNAKE_Y=()
-  read -r x y <<<"${corners[0]}"
-  SNAKE_X+=("$x") SNAKE_Y+=("$y")
-  local corner
-  for corner in "${corners[@]:1}"; do
-    read -r to_x to_y <<<"$corner"
-    step_x=0 step_y=0
-    (( to_x > x )) && step_x=1
-    (( to_x < x )) && step_x=-1
-    (( to_y > y )) && step_y=1
-    (( to_y < y )) && step_y=-1
-    while (( x != to_x || y != to_y )); do
-      x=$((x + step_x)) y=$((y + step_y))
-      SNAKE_X+=("$x") SNAKE_Y+=("$y")
-    done
-  done
-}
-
-snake_path
-
+# Each line is one gzipped ANSI frame extracted from the supplied video.
+# Line 1 = 0%, line 101 = 100%, line 102 = its completed Omarchy mark.
+# Only the art is baked in: percent, phase and bar stay driven by live state.
 render_snake() {
-  local pm="$1" count i row col index cell
-  local -a cells=()
-  count=$(( pm * ${#SNAKE_X[@]} / 1000 ))
-  (( pm > 0 && count == 0 )) && count=1
-  for ((i=0; i<${#SNAKE_X[@]}; i++)); do
-    index=$(( SNAKE_Y[i] * 21 + SNAKE_X[i] ))
-    if (( i < count )); then
-      cells[index]="${CSI}96m██${RESET}"
-    else
-      cells[index]="${DARK}░░${RESET}"
-    fi
-  done
-  for ((row=0; row<SNAKE_HEIGHT; row++)); do
+  local percent="$1" line row frame
+  line=$(( percent + 1 ))
+  (( line < 1 )) && line=1
+  (( line > 102 )) && line=102
+  frame=$(sed -n "${line}p" "$SNAKE_FRAMES")
+  [[ -n $frame ]] || return 1
+  # Decoded frames contain cursor-free text only. Put every row at the same
+  # horizontal offset so console resizing cannot leave the art off-center.
+  while IFS= read -r row; do
     line_at "$CONTENT_WIDTH" $(((CONTENT_WIDTH - SNAKE_WIDTH) / 2)) ''
-    for ((col=0; col<21; col++)); do
-      index=$((row * 21 + col))
-      cell="${cells[index]:-  }"
-      printf '%s' "$cell"
-    done
-    printf '\n'
-  done
+    printf '%s\n' "$row"
+  done < <(printf '%s' "$frame" | base64 -d | gzip -dc)
 }
 
 progress_bar() {
@@ -480,7 +447,7 @@ centered_top_row() {
 
 measure_progress_layout() {
   LAST_SIZE="$(term_size)"
-  if (( $(term_cols) >= CONTENT_WIDTH && ${LAST_SIZE%% *} >= SNAKE_PROGRESS_HEIGHT )); then
+  if [[ -r $SNAKE_FRAMES ]] && (( $(term_cols) >= CONTENT_WIDTH && ${LAST_SIZE%% *} >= SNAKE_PROGRESS_HEIGHT )); then
     TOP_ROW="$(centered_top_row "$SNAKE_PROGRESS_HEIGHT")"
     DYNAMIC_ROW=$TOP_ROW
   else
@@ -516,7 +483,7 @@ render_dynamic() {
 
   printf '%s%d;1H' "$CSI" "$DYNAMIC_ROW"
   if (( DYNAMIC_ROW == TOP_ROW )); then
-    render_snake "$pm"
+    render_snake "$(( (pm + 5) / 10 ))"
     blank_line
     center "$(( (pm + 5) / 10 ))%" "$CONTENT_WIDTH"
   else
@@ -573,19 +540,36 @@ render_finish() {
   effect_canvas_width="$(term_cols)"
   (( effect_canvas_width > 2 )) && effect_canvas_width=$((effect_canvas_width - 2))
 
+  if [[ -r $SNAKE_FRAMES ]] && (( $(term_cols) >= CONTENT_WIDTH && ${LAST_SIZE%% *} >= SNAKE_HEIGHT + 5 )); then
+    FINISH_ART_HEIGHT=$SNAKE_HEIGHT
+    FINISH_HEIGHT=$((SNAKE_HEIGHT + 7))
+  else
+    FINISH_ART_HEIGHT=$LOGO_HEIGHT
+    FINISH_HEIGHT=$((LOGO_HEIGHT + 5))
+  fi
+
   # Set before anything that can fail, so reboot_prompt still lands on the
   # button row even if the logo or the effect below never renders.
   FINISH_TOP_ROW="$(centered_top_row "$FINISH_HEIGHT")"
 
   {
     printf '%s%s%s%d;1H' "$SHOW_CURSOR" "$CLEAR" "$CSI" "$FINISH_TOP_ROW"
-    render_logo
+    if (( FINISH_ART_HEIGHT == SNAKE_HEIGHT )); then
+      render_snake 101
+    else
+      render_logo
+    fi
     blank_line
-    center "Installed Omarchy in ${duration}" "$CONTENT_WIDTH"
+    if (( FINISH_ART_HEIGHT == SNAKE_HEIGHT )); then
+      center "Omarchy" "$CONTENT_WIDTH"
+      center "${DIM}Installed in ${duration}${RESET}" "$CONTENT_WIDTH"
+    else
+      center "Installed Omarchy in ${duration}" "$CONTENT_WIDTH"
+    fi
     blank_line
   } >"$TTY_PATH"
 
-  if [[ -f $LOGO_PATH ]]; then
+  if [[ -f $LOGO_PATH && $FINISH_ART_HEIGHT != "$SNAKE_HEIGHT" ]]; then
     # Reuse mode restores a saved cursor before moving up over its input. Save
     # this anchor so the effect redraws the same logo rows shown above.
     printf '%s%d;1H\0337' "$CSI" "$((FINISH_TOP_ROW + LOGO_HEIGHT))" >"$TTY_PATH"
@@ -618,7 +602,9 @@ reboot_prompt() {
   # gum paints its prompt row at the cursor and the button two rows under it, so
   # anchor on the row right below the title to put the button as close to it as
   # gum allows. FINISH_HEIGHT budgets for the same three rows.
-  printf '%s%d;1H%s' "$CSI" "$((FINISH_TOP_ROW + LOGO_HEIGHT + 2))" "$CLEAR_LINE" >"$TTY_PATH"
+  local prompt_offset=2
+  (( FINISH_ART_HEIGHT == SNAKE_HEIGHT )) && prompt_offset=4
+  printf '%s%d;1H%s' "$CSI" "$((FINISH_TOP_ROW + FINISH_ART_HEIGHT + prompt_offset))" "$CLEAR_LINE" >"$TTY_PATH"
 
   prompt_pad=$(( ( $(term_cols) - 18 ) / 2 ))
   (( prompt_pad < 0 )) && prompt_pad=0
