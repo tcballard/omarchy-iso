@@ -172,7 +172,7 @@ with tempfile.TemporaryDirectory() as td:
     result = subprocess.run([str(DASH), str(temp/'log'), str(temp/'state'), '--',
                              'bash', '-c', 'echo non-tty-log; exit 7'], env=env,
                             capture_output=True, timeout=10)
-    assert result.returncode == 7 and b'non-tty-log' in result.stdout and b'\x1b' not in result.stdout
+    assert result.returncode == 7 and b'non-tty-log' in result.stdout and b'\x1b' not in result.stdout, (result.returncode, repr(result.stdout), repr(result.stderr))
     print('ok - non-TTY streams log, preserves failure status, emits no escapes')
 
     # Font-map fixtures exercise dispatch only; they do not verify ISO fonts.
@@ -187,7 +187,7 @@ with tempfile.TemporaryDirectory() as td:
     print('ok - loaded font map gates half-block rendering; missing glyph falls back')
 
 status, data = run_dashboard(50, 120, 'resize')
-assert status == 7 and b'visible-installer-log' in data and b'\x1b[?25h' in data
+assert status == 7 and b'visible-installer-log' in data and b'\x1b[?25h' in data, (status, repr(data[-700:]))
 assert data.count(b'\x1b[2J') == 4, ('expected four layout/failure clears', data.count(b'\x1b[2J'), data[-100:])
 print('ok - live resize 120x50 -> 30x10 -> 80x25; clears only on layout changes/failure')
 

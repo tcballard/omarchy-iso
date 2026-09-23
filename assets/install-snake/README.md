@@ -54,10 +54,33 @@ and non-TTY output, live resize, all 380 incremental screens, and synthetic font
 installer children, not actual disk installations. `bin/omarchy-iso-installer`
 previews the real renderer using simulated installation progress.
 
-Before an upstream PR is ready, build with
-`./bin/omarchy-iso-make --local-source <omarchy-checkout> <pkgs-checkout> --keep-pkg-cache --no-boot-offer`
-and run `./bin/omarchy-iso-test <iso> --install-only --no-preview` on an Arch/Omarchy
-host with Docker and KVM. Capture early/50%/100% and forced-failure QMP screens;
-confirm the loaded ISO font and all three block glyphs. The implementation
-session lacked Docker, QEMU, KVM, an ISO and the package-recipe checkout, so
-none of those real-VM results are claimed. No upstream PR has been submitted.
+A local-source ISO built on Ubuntu 24.04 in GitHub Actions and completed an actual
+headless QMP/OCR install via `./bin/omarchy-iso-test --install-only --no-preview`
+([successful run](https://github.com/tcballard/omarchy-iso/actions/runs/35908004848)).
+The ISO console rendered the half-block glyphs and existing green palette.
+The finished logo appeared at the reboot prompt after 2m 43s.
+The test build omitted `apple-bcm-firmware` from the temporary Omarchy source
+checkout because the T2 mirror did not supply that optional Mac firmware;
+this repository and the proposed installer patch do not change that package.
+
+Real ISO QMP screenshots, in installation order:
+
+![Early install](vm-screens/early.png)
+![28 percent](vm-screens/28-percent.png)
+![65 percent](vm-screens/65-percent.png)
+![Finished logo](vm-screens/complete.png)
+
+A separate test-only ISO injected a SIGTERM into the installer child after 70
+seconds of real package installation; its QMP/OCR test verified the stopped
+screen ([forced-failure run](https://github.com/tcballard/omarchy-iso/actions/runs/35910942334)).
+The partial snake, error status, phase, log tail and support actions remained
+readable:
+
+![Forced failure](vm-screens/forced-failure.png)
+
+The portable suite covers smaller terminals, resizing, Ctrl-C, missing glyphs,
+`NO_COLOR`, and non-TTY fallback. The real VM covered its default large console;
+the too-small and 80x25 cases were exercised by the PTY tests. A true 50% VM
+frame was not captured (the timed samples caught 28% and 65%). The Python
+portion of `./test/all` requires systemd as PID 1 and cannot run in this
+container; the targeted snake and media-diagnosis tests passed locally.
