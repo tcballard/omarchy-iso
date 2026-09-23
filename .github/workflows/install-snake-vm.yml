@@ -33,9 +33,9 @@ jobs:
           sudo apt-get install -y qemu-system-x86 qemu-utils ovmf socat imagemagick tesseract-ocr tesseract-ocr-eng openssh-client
           sudo ln -s /usr/bin/convert /usr/local/bin/magick
           sudo mkdir -p /usr/share/edk2/x64
-          code=$(find /usr/share/OVMF -name 'OVMF_CODE*4M*.fd' | head -n1)
-          vars=$(find /usr/share/OVMF -name 'OVMF_VARS*4M*.fd' | head -n1)
-          test -n "$code" && test -n "$vars" && test -c /dev/kvm
+          code=/usr/share/OVMF/OVMF_CODE_4M.fd
+          vars=/usr/share/OVMF/OVMF_VARS_4M.fd
+          test -f "$code" && test -f "$vars" && test -c /dev/kvm
           sudo ln -s "$code" /usr/share/edk2/x64/OVMF_CODE.4m.fd
           sudo ln -s "$vars" /usr/share/edk2/x64/OVMF_VARS.4m.fd
           mkdir -p "$RUNNER_TEMP/bin"
