@@ -101,6 +101,7 @@ fi
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 dashboard="$repo_root/configs/airootfs/usr/local/bin/omarchy-install-dashboard"
+export OMARCHY_SNAKE_FRAMES="${OMARCHY_SNAKE_FRAMES:-$repo_root/configs/airootfs/usr/share/omarchy-iso/install-snake.frames}"
 
 if [[ ! -x $dashboard ]]; then
   echo "Installer dashboard is not executable: $dashboard" >&2
