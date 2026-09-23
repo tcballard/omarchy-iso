@@ -62,7 +62,11 @@ jobs:
       - name: Confirm forced install failure and readable screen
         run: |
           iso=$(ls -t release/*.iso | head -n1)
-          if ./bin/omarchy-iso-test "$iso" --install-only --no-preview --memory 4096 --timeout 3600; then\n            echo "Expected the injected installer failure" >&2\n            exit 1\n          fi\n          find test-runs -name failure-installer-installation-stopped.png | grep -q .
+          if ./bin/omarchy-iso-test "$iso" --install-only --no-preview --memory 4096 --timeout 3600; then
+            echo "Expected the injected installer failure" >&2
+            exit 1
+          fi
+          find test-runs -name failure-installer-installation-stopped.png | grep -q .
       - name: Upload real installer screens and run logs
         if: always()
         uses: actions/upload-artifact@v4
