@@ -47,16 +47,27 @@ jobs:
           # The T2 mirror currently lacks this optional Mac-only firmware.
           # A PC VM cannot use it; keep the branch's ISO/installer files intact.
           sed -i '/^apple-bcm-firmware$/d' deps/omarchy/install/omarchy-other.packages
+          # Inject a reproducible child failure in this test image only, after
+          # enough real package work for the snake to have visibly advanced.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("configs/airootfs/usr/local/bin/omarchy-install-dashboard")
+          original = p.read_text()
+          needle = "launch_child\n\ntick=0"
+          assert original.count(needle) == 1
+          injected = 'launch_child\n( sleep 70; echo "FORCED VM FAILURE: stopping installer child" >>"$LOG_FILE"; kill -- -"$child_pgid" ) &\n\ntick=0'
+          p.write_text(original.replace(needle, injected))
+          PY
           ./bin/omarchy-iso-make --local-source deps/omarchy deps/omarchy-pkgs --keep-pkg-cache --no-boot-offer
-      - name: Install from ISO in VM and capture QMP screens
+      - name: Confirm forced install failure and readable screen
         run: |
           iso=$(ls -t release/*.iso | head -n1)
-          ./bin/omarchy-iso-test "$iso" --install-only --no-preview --memory 4096 --timeout 3600
+          if ./bin/omarchy-iso-test "$iso" --install-only --no-preview --memory 4096 --timeout 3600; then\n            echo "Expected the injected installer failure" >&2\n            exit 1\n          fi\n          find test-runs -name failure-installer-installation-stopped.png | grep -q .
       - name: Upload real installer screens and run logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: install-snake-vm-evidence
+          name: install-snake-forced-failure-evidence
           path: |
             test-runs/**/*.png
             test-runs/**/install-serial.log
