@@ -36,17 +36,18 @@ def progress_from_bar(path: Path) -> int | None:
 
 def color(rgb: tuple[int, int, int]) -> int:
     red, green, blue = rgb
-    if blue > 75 and green > 45 and blue > red * 1.25:
-        return 81 if blue > 155 else 74
-    if blue > 32 and green > red * 1.3:
-        return 24
-    if blue > 11 and green > red * 1.3:
+    # One solid foreground colour: indexed 113 is the nearest xterm colour
+    # to Tokyo Night's default green (#9ece6a). The video's cyan luminance
+    # determines the mask, not the output hue. No antialiased border bands.
+    if blue >= 85 and green >= 70 and blue > red * 1.25:
+        return 113
+    if blue > 12 and green > red * 1.3:
         return 233
     return 16
 
 
 def ansi_frame(path: Path) -> bytes:
-    image = Image.open(path).convert("RGB").resize((SIZE, SIZE), Image.Resampling.LANCZOS)
+    image = Image.open(path).convert("RGB").resize((SIZE, SIZE), Image.Resampling.BOX)
     out = io.StringIO()
     for y in range(0, SIZE, 2):
         last = None
