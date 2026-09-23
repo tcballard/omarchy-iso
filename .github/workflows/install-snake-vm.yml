@@ -41,7 +41,9 @@ jobs:
           echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
       - name: Build real ISO
         run: |
-          rg -n '^apple-bcm-firmware$' archiso/configs/releng/packages.x86_64 deps/omarchy/install/*.packages || true
+          # The T2 mirror currently lacks this optional Mac-only firmware.
+          # A PC VM cannot use it; keep the branch's ISO/installer files intact.
+          sed -i '/^apple-bcm-firmware$/d' deps/omarchy/install/omarchy-other.packages
           ./bin/omarchy-iso-make --local-source deps/omarchy deps/omarchy-pkgs --keep-pkg-cache --no-boot-offer
       - name: Install from ISO in VM and capture QMP screens
         run: |
