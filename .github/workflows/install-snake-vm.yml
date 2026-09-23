@@ -1,0 +1,48 @@
+name: Install snake ISO VM check
+
+on:
+  push:
+    branches: [feat/install-snake-grid]
+  workflow_dispatch:
+
+jobs:
+  install:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: jlumbroso/free-disk-space@v1.3.1
+      - name: Install host VM and OCR tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 qemu-utils ovmf socat imagemagick tesseract-ocr tesseract-ocr-eng openssh-client
+          sudo ln -s /usr/bin/convert /usr/local/bin/magick
+          sudo mkdir -p /usr/share/edk2/x64
+          code=$(find /usr/share/OVMF -name 'OVMF_CODE*4M*.fd' | head -n1)
+          vars=$(find /usr/share/OVMF -name 'OVMF_VARS*4M*.fd' | head -n1)
+          test -n "$code" && test -n "$vars" && test -c /dev/kvm
+          sudo ln -s "$code" /usr/share/edk2/x64/OVMF_CODE.4m.fd
+          sudo ln -s "$vars" /usr/share/edk2/x64/OVMF_VARS.4m.fd
+          mkdir -p "$RUNNER_TEMP/bin"
+          printf '#!/bin/sh\nexit 0\n' >"$RUNNER_TEMP/bin/omarchy-pkg-add"
+          chmod +x "$RUNNER_TEMP/bin/omarchy-pkg-add"
+          echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
+      - name: Build real ISO
+        run: ./bin/omarchy-iso-make --keep-pkg-cache --no-boot-offer
+      - name: Install from ISO in VM and capture QMP screens
+        run: |
+          iso=$(ls -t release/*.iso | head -n1)
+          ./bin/omarchy-iso-test "$iso" --install-only --no-preview --memory 4096 --timeout 3600
+      - name: Upload real installer screens and run logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: install-snake-vm-evidence
+          path: |
+            test-runs/**/*.png
+            test-runs/**/install-serial.log
+            test-runs/**/omarchy-install.log
+          if-no-files-found: warn
+          retention-days: 3
