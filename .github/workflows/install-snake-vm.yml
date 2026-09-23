@@ -13,6 +13,16 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      - uses: actions/checkout@v4
+        with:
+          repository: omacom/omarchy
+          ref: quattro
+          path: deps/omarchy
+      - uses: actions/checkout@v4
+        with:
+          repository: omacom/omarchy-pkgs
+          ref: master
+          path: deps/omarchy-pkgs
       - uses: jlumbroso/free-disk-space@v1.3.1
       - name: Install host VM and OCR tools
         run: |
@@ -30,7 +40,9 @@ jobs:
           chmod +x "$RUNNER_TEMP/bin/omarchy-pkg-add"
           echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
       - name: Build real ISO
-        run: ./bin/omarchy-iso-make --edge --keep-pkg-cache --no-boot-offer
+        run: |
+          rg -n '^apple-bcm-firmware$' archiso/configs/releng/packages.x86_64 deps/omarchy/install/*.packages || true
+          ./bin/omarchy-iso-make --local-source deps/omarchy deps/omarchy-pkgs --keep-pkg-cache --no-boot-offer
       - name: Install from ISO in VM and capture QMP screens
         run: |
           iso=$(ls -t release/*.iso | head -n1)
