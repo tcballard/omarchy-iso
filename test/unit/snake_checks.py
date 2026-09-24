@@ -71,6 +71,60 @@ INSTALL_SUCCEEDED=1; install_progress; [[ $PROGRESS_PM == 1000 ]]
     subprocess.run(['bash'], input=script, text=True, env=env, check=True)
     print('ok - stalls add no progress; 100% requires successful child exit')
 
+    # Adapt PR #1's stalled/bursty work replay to the real progress collector.
+    # Include packages present before the first poll and an excessive count.
+    target = temp / 'target'
+    db = target / 'var/lib/pacman/local'
+    db.mkdir(parents=True)
+    for n in range(400):
+        (db / f'pkg-{n}-1').mkdir()
+    state.write_text(json.dumps({'current_phase': 'Installing Arch + Omarchy',
+                                 'target': str(target)}))
+    script = f'set -- "{temp / "log"}" "{state}" -- true\n' + definitions + '''
+snake_init
+PKG_TOTAL=1000
+NOW=0; install_progress
+[[ $PROGRESS_PM == 318 ]] || exit 1
+for NOW in 900 1800 4200; do
+  install_progress
+  [[ $PROGRESS_PM == 318 ]] || exit 1
+done
+# A transient package-directory removal must not move progress backwards.
+rmdir "''' + str(db) + '''/pkg-0-1"
+install_progress; [[ $PROGRESS_PM == 318 ]] || exit 1
+PKG_TOTAL=300
+install_progress; [[ $PROGRESS_PM == 699 ]] || exit 1
+printf '{"current_phase":"Future unknown phase","current_index":99,"total_phases":100}' >"$STATE_FILE"
+NOW=9000; install_progress; [[ $PROGRESS_PM == 699 ]] || exit 1
+printf '{"current_phase":"Finalizing Limine boot"}' >"$STATE_FILE"
+install_progress; [[ $PROGRESS_PM == 855 ]] || exit 1
+printf '{"current_phase":"Installation complete","finished_at":123}' >"$STATE_FILE"
+install_progress; [[ $PROGRESS_PM == 999 ]] || exit 1
+for ((i=0;i<70;i++)); do
+  before=$SNAKE_LENGTH; snake_advance
+  (( SNAKE_LENGTH >= before && SNAKE_LENGTH <= before + 6 && SNAKE_LENGTH <= 379 )) || exit 1
+done
+[[ $SNAKE_LENGTH == 379 ]] || exit 1
+INSTALL_SUCCEEDED=1; install_progress; snake_advance
+[[ $PROGRESS_PM == 1000 && $SNAKE_LENGTH == 380 ]]
+'''
+    subprocess.run(['bash'], input=script, text=True, env=env, check=True)
+    print('ok - real package counts, long stalls, regression, over-count, unknown phase and last-cell gate')
+
+    # Verify the private-pipe timer really waits without using the fallback.
+    script = f'set -- "{temp / "log"}" "{state}" -- true\n' + definitions + '''
+{ exec {FRAME_WAIT_FD}<> <(:); }
+sleep() { echo 'unexpected sleep fallback' >&2; return 1; }
+frame_pause 0.03
+cleanup
+[[ -z $FRAME_WAIT_FD ]]
+'''
+    import time
+    start = time.monotonic()
+    subprocess.run(['bash'], input=script, text=True, env=env, check=True)
+    assert time.monotonic() - start >= 0.03, 'frame timer did not wait'
+    print('ok - frame delay waits without spawning sleep and releases its descriptor')
+
 # Real Bash dashboard in a PTY; installer child is deliberately simulated.
 # Missing font coverage is tested via a synthetic loaded-font map, separately
 # from the unresolved real ISO glyph check.
@@ -83,7 +137,7 @@ import termios
 import time
 
 
-def run_dashboard(rows, cols, mode, no_color=False, term='xterm-256color'):
+def run_dashboard(rows, cols, mode, no_color=False, term='xterm-256color', interactive=False):
     with tempfile.TemporaryDirectory() as td:
         temp = Path(td)
         state = temp / 'state.json'
@@ -99,7 +153,7 @@ def run_dashboard(rows, cols, mode, no_color=False, term='xterm-256color'):
             os.close(ready_r)
             os.environ.update(OMARCHY_SNAKE_HELPER=str(HELPER), OMARCHY_SNAKE_PATH=str(PATH),
                               OMARCHY_PATH=str(ROOT.parent / 'omarchy'),
-                              OMARCHY_UI_INTERACTIVE='no', OMARCHY_UI_AUTO_REBOOT='no',
+                              OMARCHY_UI_INTERACTIVE='yes' if interactive else 'no', OMARCHY_UI_AUTO_REBOOT='no',
                               TERM=term, LC_ALL='C.UTF-8')
             if no_color: os.environ['NO_COLOR'] = '1'
             else: os.environ.pop('NO_COLOR', None)
@@ -163,6 +217,10 @@ for rows, cols, mode in [(25,80,'success'), (50,120,'failure'), (25,80,'failure'
 status, data = run_dashboard(25, 80, 'failure', no_color=True)
 assert not re.search(rb'\x1b\[[0-9;]*m', data), 'NO_COLOR emitted SGR'
 print('ok - NO_COLOR has no SGR colour escapes')
+for rows, cols, term in [(10,30,'xterm-256color'), (25,80,'dumb')]:
+    status, data = run_dashboard(rows, cols, 'success', term=term, interactive=True)
+    assert status == 0 and b'Installed Omarchy. Run reboot' in data and b'\x1b' not in data
+print('ok - interactive plain output explains completion and how to reboot without escapes')
 
 with tempfile.TemporaryDirectory() as td:
     temp = Path(td)
@@ -173,7 +231,28 @@ with tempfile.TemporaryDirectory() as td:
                              'bash', '-c', 'echo non-tty-log; exit 7'], env=env,
                             capture_output=True, timeout=10)
     assert result.returncode == 7 and b'non-tty-log' in result.stdout and b'\x1b' not in result.stdout, (result.returncode, repr(result.stdout), repr(result.stderr))
+    assert b'Installed Omarchy' not in result.stdout, 'failure reported success'
     print('ok - non-TTY streams log, preserves failure status, emits no escapes')
+
+    # Stub reboot so deferred and unattended behavior is safe to verify here.
+    marker = temp / 'reboot-called'
+    reboot = temp / 'reboot'
+    reboot.write_text(f'#!/bin/sh\ntouch "{marker}"\n')
+    reboot.chmod(0o755)
+    for interactive, deferred, auto, code, expected in [
+            ('yes','yes','yes',0,True), ('no','no','yes',0,True),
+            ('yes','no','yes',0,False), ('yes','yes','no',0,False),
+            ('no','yes','yes',7,False)]:
+        marker.unlink(missing_ok=True)
+        run_env = dict(env, PATH=str(temp)+':'+os.environ['PATH'],
+                       OMARCHY_UI_INTERACTIVE=interactive,
+                       OMARCHY_UI_DEFER_PROVISIONING=deferred,
+                       OMARCHY_UI_AUTO_REBOOT=auto)
+        result = subprocess.run([str(DASH), str(temp/'log'), str(temp/'state'), '--',
+                                 'bash', '-c', f'exit {code}'], env=run_env,
+                                capture_output=True, timeout=10)
+        assert result.returncode == code and marker.exists() == expected
+    print('ok - plain reboot respects deferred mode, unattended mode, opt-out and failure')
 
     # Font-map fixtures exercise dispatch only; they do not verify ISO fonts.
     for mapping, expected in [('0x1 U+2580\n0x2 U+2584\n0x3 U+2588', 1),
@@ -185,6 +264,13 @@ with tempfile.TemporaryDirectory() as td:
         script = f'source "{HELPER}"\nsnake_init\n[[ $SNAKE_ENABLED == {expected} ]]\n'
         subprocess.run(['bash'], input=script, text=True, env=env, check=True)
     print('ok - loaded font map gates half-block rendering; missing glyph falls back')
+
+    corrupt = temp / 'duplicate.path'
+    corrupt.write_text('0 0\n' * 380)
+    env.update(OMARCHY_SNAKE_PATH=str(corrupt), TERM='xterm-256color')
+    subprocess.run(['bash'], input=f'source "{HELPER}"\nsnake_init\n[[ $SNAKE_ENABLED == 0 ]]\n',
+                   text=True, env=env, check=True)
+    print('ok - duplicate path cells disable the snake')
 
 status, data = run_dashboard(50, 120, 'resize')
 assert status == 7 and b'visible-installer-log' in data and b'\x1b[?25h' in data, (status, repr(data[-700:]))

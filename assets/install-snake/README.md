@@ -31,6 +31,8 @@ Length is `1 + floor(progress_per_mille * 379 / 1000)`, capped at six new cells
 per 100ms-or-longer frame. Progress is monotonic and has no time-based bonus.
 A stalled head blinks without extending the snake. State is sampled at 2Hz;
 rendering runs at no more than 10Hz and only changed logo rows are written.
+Frame delays use PR #1's private-pipe timed read, avoiding a new `sleep`
+process on every frame; `sleep` remains a fallback if the pipe is unavailable.
 100% requires the actual installer's successful exit, not merely `finished_at`.
 The full logo then flashes briefly and remains above the existing reboot prompt.
 
@@ -44,6 +46,10 @@ resize into a small terminal switches to one compact status line and can grow
 back into the snake. On failure, a tall console keeps the frozen snake; 80x25
 reserves the space for the error and existing log actions. Unattended success
 still reboots, unless OMARCHY_UI_AUTO_REBOOT=no.
+Interactive plain output ends with an explicit installed message and `reboot`
+instruction. Deferred-provisioning installs retain automatic reboot in plain
+mode as well. Failed installs keep their nonzero exit status and never print
+the success instruction.
 
 ## Evidence and limits
 
@@ -53,6 +59,15 @@ at p=0, 1/379, 0.5 and 1, bounded monotone growth, stalled work, success gating,
 and non-TTY output, live resize, all 380 incremental screens, and synthetic font-map dispatch. These are simulated
 installer children, not actual disk installations. `bin/omarchy-iso-installer`
 previews the real renderer using simulated installation progress.
+
+Consolidation from PR #1 adds real package-database replay through long stalls,
+bursts, disappearing entries, excessive counts and unknown phases, plus an
+explicit last-cell success gate, duplicate-path rejection and a private-pipe
+timer check. The `Installer dashboard tests` workflow runs the focused snake
+and media-diagnosis suites on pull requests and pushes to the integration
+branches. These checks do not build or boot an ISO. The VM evidence below
+predates this consolidation and does not validate the new timer/plain-output
+changes on a booted ISO.
 
 A local-source ISO built on Ubuntu 24.04 in GitHub Actions and completed an actual
 headless QMP/OCR install via `./bin/omarchy-iso-test --install-only --no-preview`

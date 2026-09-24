@@ -63,6 +63,20 @@ child_pid=""
 child_pgid=""
 plain_follower=""
 PLAIN_MODE=0
+FRAME_WAIT_FD=""
+
+# Borrow PR #1's timed-read delay: keep both ends of a private pipe open so
+# animation frames need no new sleep process. Retain sleep as a safe fallback.
+frame_pause() {
+  local seconds="${1:-0.1}" rc=0
+  if [[ -n $FRAME_WAIT_FD ]]; then
+    read -rt "$seconds" -u "$FRAME_WAIT_FD" _ || rc=$?
+    (( rc > 128 )) && return 0
+    exec {FRAME_WAIT_FD}>&- || true
+    FRAME_WAIT_FD=""
+  fi
+  sleep "$seconds"
+}
 
 tips=(
   "Super + Space opens the Omarchy menu for apps, settings, and more"
@@ -87,6 +101,10 @@ tips=(
 
 cleanup() {
   [[ -z ${plain_follower:-} ]] || kill "$plain_follower" 2>/dev/null || true
+  if [[ -n $FRAME_WAIT_FD ]]; then
+    exec {FRAME_WAIT_FD}>&- || true
+    FRAME_WAIT_FD=""
+  fi
   (( PLAIN_MODE )) && return 0
   printf '%s%s' "$RESET" "$SHOW_CURSOR" >"$TTY_PATH" 2>/dev/null || true
 }
@@ -791,6 +809,9 @@ plain_output() {
   wait "$plain_follower" 2>/dev/null || true
   dashboard_log "installer child exited with status $status"
   printf 'Installer exited with status %d\n' "$status"
+  if (( status == 0 )); then
+    printf 'Installed Omarchy. Run reboot when you are ready to start your new system.\n'
+  fi
   return "$status"
 }
 TTY_USABLE=0
@@ -804,8 +825,10 @@ if (( ! TTY_USABLE )) || [[ ${TERM:-dumb} == dumb ]] ||
   else
     if plain_output; then status=0; else status=$?; fi
   fi
-  if (( status == 0 )) && ! interactive && [[ ${OMARCHY_UI_AUTO_REBOOT:-} != no ]]; then
-    reboot 2>/dev/null || systemctl reboot 2>/dev/null || true
+  if (( status == 0 )) && [[ ${OMARCHY_UI_AUTO_REBOOT:-} != no ]]; then
+    if ! interactive || [[ ${OMARCHY_UI_DEFER_PROVISIONING:-} == yes ]]; then
+      reboot 2>/dev/null || systemctl reboot 2>/dev/null || true
+    fi
   fi
   exit "$status"
 fi
@@ -814,6 +837,7 @@ printf '%s' "$HIDE_CURSOR" >"$TTY_PATH"
 render_static >"$TTY_PATH"
 set_now
 DASH_T0=$NOW
+{ exec {FRAME_WAIT_FD}<> <(:); } 2>/dev/null || FRAME_WAIT_FD=""
 launch_child
 
 tick=0
@@ -824,7 +848,7 @@ while jobs -pr | grep -qx "$child_pid"; do
   [[ ! -r $SNAKE_HELPER ]] || snake_advance
   render_dynamic >"$TTY_PATH" 2>/dev/null || true
   tick=$((tick + 1))
-  sleep 0.1
+  frame_pause
 done
 
 set +e
@@ -843,15 +867,15 @@ if (( status == 0 )); then
     while (( SNAKE_LENGTH < 380 )); do
       snake_advance
       render_dynamic >"$TTY_PATH" 2>/dev/null || true
-      sleep 0.1
+      frame_pause
     done
-    sleep 0.3
+    frame_pause 0.3
     SNAKE_FLASH=1
     snake_render >"$TTY_PATH"
-    sleep 0.3
+    frame_pause 0.3
     SNAKE_FLASH=0
     snake_render >"$TTY_PATH"
-    sleep 0.3
+    frame_pause 0.3
   fi
 fi
 

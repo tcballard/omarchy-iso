@@ -14,6 +14,7 @@ snake_init() {
   while read -r r c; do
     [[ $r =~ ^[0-9]+$ && $c =~ ^[0-9]+$ ]] || return 0
     (( r < 30 && c < 30 )) || return 0
+    [[ -z ${SNAKE_ORDER[r * 30 + c]:-} ]] || return 0
     index=$((index + 1))
     SNAKE_ORDER[r * 30 + c]=$index
     SNAKE_CELL_ROW[index]=$((r / 2))
